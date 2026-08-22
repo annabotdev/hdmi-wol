@@ -19,32 +19,28 @@ CONFIG_FILE="/etc/hdmi_smart_wol.conf"
 SERVICE_FILE="/etc/systemd/system/hdmi-smart-wol.service"
 HOTPLUG_SERVICE="/etc/systemd/system/hdmi-hotplug-wol.service"
 UDEV_RULE="/etc/udev/rules.d/99-hdmi-hotplug-wol.rules"
-GLOBAL_BIN="/usr/local/bin/hdmi-wol"
+GLOBAL_BIN="$HOME/.local/bin/hdmi-wol"
 
 # Generate default config if missing
 if [ ! -f "$CONFIG_FILE" ]; then
     sudo bash -c "cat > $CONFIG_FILE" << 'CONFEOF'
 # HDMI Smart WoL - Global Configuration
 
-# Update URL (Change to your fork's raw URL)
-GITHUB_REPO_URL="https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/hdmi-smart-wol/main/hdmi_smart_wol.sh"
+# Update URL (Hardcoded default)
+GITHUB_REPO_URL="https://raw.githubusercontent.com/annabotdev/hdmi-wol/main/hdmi-wol.sh"
 
 # Execution Thresholds
 MAX_POLL_ATTEMPTS=20
 WOL_BROADCAST_IP="255.255.255.255"
 
 # Hardware Overrides (Leave blank for auto-discovery)
-# Format: XX:XX:XX:XX:XX:XX
 FORCE_MAC=""
-# Format: 192.168.X.X
 FORCE_IP=""
-# Values: SAMSUNG, GENERIC
 FORCE_BRAND=""
 CONFEOF
     chmod 644 "$CONFIG_FILE" 2>/dev/null || true
 fi
 
-# Source configurations
 source "$CONFIG_FILE"
 
 ensure_cache_dir() {
@@ -332,6 +328,7 @@ send_samsung_macro() {
 
     python3 -c "
 import socket, ssl, json, base64, struct, time, sys
+
 tv_ip = '$ip'
 token = '$token'
 target_key = '$target_key'
@@ -352,34 +349,42 @@ def build_frame(p):
     h.extend(mask)
     return bytes(h + bytearray([b ^ mask[i % 4] for i, b in enumerate(p)]))
 
-try:
-    s = socket.create_connection((tv_ip, 8002), timeout=2.5)
-    ss = ctx.wrap_socket(s)
-    handshake = (
-        'GET ' + url_path + ' HTTP/1.1\r\n'
-        'Host: ' + tv_ip + ':8002\r\n'
-        'Upgrade: websocket\r\n'
-        'Connection: Upgrade\r\n'
-        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
-        'Sec-WebSocket-Version: 13\r\n\r\n'
-    )
-    ss.sendall(handshake.encode())
-    resp = ss.recv(2048).decode('utf-8', errors='ignore')
-    if '101' not in resp: sys.exit(2)
+max_retries = 3
+for attempt in range(1, max_retries + 1):
+    try:
+        s = socket.create_connection((tv_ip, 8002), timeout=3.0)
+        ss = ctx.wrap_socket(s)
+        handshake = (
+            'GET ' + url_path + ' HTTP/1.1\r\n'
+            'Host: ' + tv_ip + ':8002\r\n'
+            'Upgrade: websocket\r\n'
+            'Connection: Upgrade\r\n'
+            'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+            'Sec-WebSocket-Version: 13\r\n\r\n'
+        )
+        ss.sendall(handshake.encode())
+        resp = ss.recv(2048).decode('utf-8', errors='ignore')
+        if '101' not in resp:
+            ss.close()
+            time.sleep(1.0)
+            continue
 
-    keys = ['KEY_EXIT', 'KEY_HOME', target_key, 'KEY_ENTER', target_key]
-    for i, k in enumerate(keys):
-        payload = json.dumps({'method': 'ms.remote.control', 'params': {'Cmd': 'Click', 'DataOfCmd': k, 'Option': 'false', 'TypeOfRemote': 'SendRemoteKey'}}).encode('utf-8')
-        ss.sendall(build_frame(payload))
-        if i == 1:
-            time.sleep(d_long)
-        elif i < len(keys) - 1:
-            time.sleep(d_short)
-            
-    time.sleep(0.2)
-    ss.close()
-    sys.exit(0)
-except Exception: sys.exit(1)
+        keys = ['KEY_EXIT', 'KEY_HOME', target_key, 'KEY_ENTER', target_key]
+        for i, k in enumerate(keys):
+            payload = json.dumps({'method': 'ms.remote.control', 'params': {'Cmd': 'Click', 'DataOfCmd': k, 'Option': 'false', 'TypeOfRemote': 'SendRemoteKey'}}).encode('utf-8')
+            ss.sendall(build_frame(payload))
+            if i == 1:
+                time.sleep(d_long)
+            elif i < len(keys) - 1:
+                time.sleep(d_short)
+                
+        time.sleep(0.3)
+        ss.close()
+        sys.exit(0)
+    except Exception as e:
+        time.sleep(1.0)
+
+sys.exit(1)
 " && return 0
     return 1
 }
@@ -412,7 +417,6 @@ send_brand_power_cmd() {
     local port_num=$(get_hdmi_port_num)
     local target_key="KEY_EXT4${port_num}"
     
-    # --- HARDWARE PROFILING ---
     local tv_model=$(curl -s --connect-timeout 1.5 -m 2.0 "http://${ip}:8001/api/v2/" 2>/dev/null | grep -oEi '"modelName":"[^"]*"' | head -n1 | cut -d'"' -f4)
     log_msg "[WOL] Detected Target Hardware: ${tv_model:-UNKNOWN}"
 
@@ -495,23 +499,15 @@ run_wol_sync() {
 }
 
 update_script() {
-    if [[ "$GITHUB_REPO_URL" == *"YOUR_GITHUB_USERNAME"* ]]; then
-        echo "[-] Update failed: GITHUB_REPO_URL not configured."
-        echo "    Run 'hdmi-wol --config' to set your repository URL first."
-        exit 1
-    fi
-    
     log_msg "[UPDATE] Fetching latest script from $GITHUB_REPO_URL..."
     local tmp_dl=$(mktemp)
     if curl -sL "$GITHUB_REPO_URL" -o "$tmp_dl"; then
         if grep -q "#!/bin/bash" "$tmp_dl"; then
-            sudo mv "$tmp_dl" "$GLOBAL_BIN"
-            sudo chmod +x "$GLOBAL_BIN"
-            # Attempt to overwrite the local execution file if it differs from the global bin
-            sudo cp "$GLOBAL_BIN" "$(readlink -f "$0" 2>/dev/null || echo "$0")" 2>/dev/null || true
+            mkdir -p "$(dirname "$GLOBAL_BIN")"
+            mv "$tmp_dl" "$GLOBAL_BIN"
+            chmod +x "$GLOBAL_BIN"
             log_msg "[UPDATE] Successfully updated to latest version."
-            echo "[✓] Update complete! Running daemon-reload..."
-            sudo systemctl daemon-reload
+            echo "[✓] Update complete!"
         else
             echo "[-] Invalid file downloaded. Update aborted."
             rm -f "$tmp_dl"
@@ -647,7 +643,6 @@ show_help() {
 install_service() {
     check_and_install_deps
     ensure_cache_dir
-    sudo ln -sf "$(readlink -f "$0" 2>/dev/null || echo "$0")" "$GLOBAL_BIN" 2>/dev/null || true
 
     cat << 'SUBEOF' | sudo tee "$SERVICE_FILE" > /dev/null
 [Unit]
@@ -657,7 +652,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/hdmi-wol --sendwol
+ExecStart=/home/admin/.local/bin/hdmi-wol --sendwol
 
 [Install]
 WantedBy=multi-user.target sleep.target
@@ -670,7 +665,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/hdmi-wol --sendwol
+ExecStart=/home/admin/.local/bin/hdmi-wol --sendwol
 SUBEOF
 
     cat << 'SUBEOF' | sudo tee "$UDEV_RULE" > /dev/null
@@ -703,7 +698,7 @@ case "$1" in
     --pair|--force-pair) manual_sync --force ;;
     --repair) sudo rm -rf "$CACHE_DIR"; install_service ;;
     --sendwol|-w|--run) run_wol_sync ;;
-    --install) install_service ;;
+    --install) install_style ;;
     --uninstall|--disable) uninstall_service ;;
     --update) update_script ;;
     --config) ${EDITOR:-nano} "$CONFIG_FILE" ;;
