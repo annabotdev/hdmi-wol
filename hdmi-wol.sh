@@ -1,22 +1,51 @@
 #!/bin/bash
-# HDMI Smart Wake-on-LAN & Source Switcher - Production Edition
+# HDMI Smart Wake-on-LAN & Source Switcher
+# A state-aware hardware abstraction layer for Tizen/WebOS displays
 
 if [ "$EUID" -ne 0 ]; then
     case "$1" in
-        --install|--uninstall|--disable|--sync|-s|--pair|--force-pair|--repair)
+        --install|--uninstall|--disable|--sync|-s|--pair|--force-pair|--repair|--update|--config)
             exec sudo "$0" "$@"
             ;;
     esac
 fi
 
+# Core Paths
 CACHE_DIR="/var/cache/hdmi_wol"
 LOG_FILE="$CACHE_DIR/service.log"
 LOCK_FILE="/tmp/hdmi_smart_wol.lock"
 TOKEN_FILE="$CACHE_DIR/samsung_token.txt"
+CONFIG_FILE="/etc/hdmi_smart_wol.conf"
 SERVICE_FILE="/etc/systemd/system/hdmi-smart-wol.service"
 HOTPLUG_SERVICE="/etc/systemd/system/hdmi-hotplug-wol.service"
 UDEV_RULE="/etc/udev/rules.d/99-hdmi-hotplug-wol.rules"
 GLOBAL_BIN="/usr/local/bin/hdmi-wol"
+
+# Generate default config if missing
+if [ ! -f "$CONFIG_FILE" ]; then
+    sudo bash -c "cat > $CONFIG_FILE" << 'CONFEOF'
+# HDMI Smart WoL - Global Configuration
+
+# Update URL (Change to your fork's raw URL)
+GITHUB_REPO_URL="https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/hdmi-smart-wol/main/hdmi_smart_wol.sh"
+
+# Execution Thresholds
+MAX_POLL_ATTEMPTS=20
+WOL_BROADCAST_IP="255.255.255.255"
+
+# Hardware Overrides (Leave blank for auto-discovery)
+# Format: XX:XX:XX:XX:XX:XX
+FORCE_MAC=""
+# Format: 192.168.X.X
+FORCE_IP=""
+# Values: SAMSUNG, GENERIC
+FORCE_BRAND=""
+CONFEOF
+    chmod 644 "$CONFIG_FILE" 2>/dev/null || true
+fi
+
+# Source configurations
+source "$CONFIG_FILE"
 
 ensure_cache_dir() {
     if [ ! -d "$CACHE_DIR" ]; then
@@ -29,7 +58,6 @@ log_msg() {
     local msg="$1"
     local timestamp
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    # EXPLICITLY send terminal output to standard error to prevent subshell variable corruption
     >&2 echo "[$timestamp] $msg"
     ensure_cache_dir
     echo "[$timestamp] $msg" >> "$LOG_FILE" 2>/dev/null || true
@@ -52,16 +80,19 @@ check_and_install_deps() {
         cat << "SUBEOF" | sudo tee /usr/local/bin/bash_wol > /dev/null
 #!/bin/bash
 TARGET_MAC="\$1"
+BCAST="\$2"
+[ -z "\$BCAST" ] && BCAST="255.255.255.255"
 [ -z "\$TARGET_MAC" ] && exit 1
 python3 -c "
 import socket, sys
 mac = sys.argv[1].replace(':', '').replace('-', '')
+bcast = sys.argv[2]
 if len(mac) != 12: sys.exit(1)
 payload = bytes.fromhex('FF' * 6 + mac * 16)
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-sock.sendto(payload, ('255.255.255.255', 9))
-" "\$TARGET_MAC" 2>/dev/null
+sock.sendto(payload, (bcast, 9))
+" "\$TARGET_MAC" "\$BCAST" 2>/dev/null
 SUBEOF
         sudo chmod +x /usr/local/bin/bash_wol
         log_msg "[DEPS] Native WoL helper installed at /usr/local/bin/bash_wol"
@@ -96,6 +127,7 @@ get_edid_info() {
 }
 
 get_tv_brand() {
+    if [ -n "$FORCE_BRAND" ]; then echo "$FORCE_BRAND"; return; fi
     local edid_path=$(get_edid_path)
     [ -z "$edid_path" ] && { echo "GENERIC"; return; }
     local pnp_hex=$(hexdump -s 8 -n 2 -e '2/1 "%02x"' "$edid_path" 2>/dev/null)
@@ -167,6 +199,13 @@ discover_samsung_via_api() {
 discover_and_select_mac() {
     local brand="$1"
     local edid_id="$2"
+    
+    if [ -n "$FORCE_MAC" ] && [ -n "$FORCE_IP" ]; then
+        log_msg "[DISCOVERY] Using config overrides -> MAC: $FORCE_MAC, IP: $FORCE_IP"
+        echo "${FORCE_MAC}:${FORCE_IP}"
+        return 0
+    fi
+
     log_msg "[DISCOVERY] Querying local subnet nodes on port 8001..."
     populate_arp_table >/dev/null 2>&1
     if [ "$brand" = "SAMSUNG" ]; then
@@ -193,41 +232,6 @@ get_samsung_power_state() {
     [ -z "$raw_info" ] && { echo "OFFLINE"; return; }
     local pstate=$(echo "$raw_info" | grep -oEi '"PowerState":"[^"]*"' | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')
     echo "${pstate:-UNKNOWN}"
-}
-
-validate_samsung_token() {
-    local ip="$1"
-    [ ! -s "$TOKEN_FILE" ] && return 1
-    local token=$(cat "$TOKEN_FILE" | tr -d '[:space:]')
-    [ -z "$token" ] && return 1
-    python3 -c "
-import socket, ssl, base64, sys
-tv_ip = '$ip'
-token = '$token'
-app_name = base64.b64encode(b'Bazzite Console').decode('utf-8')
-url_path = '/api/v2/channels/samsung.remote.control?name=' + app_name + '&token=' + token
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-try:
-    s = socket.create_connection((tv_ip, 8002), timeout=1.8)
-    ss = ctx.wrap_socket(s)
-    handshake = (
-        'GET ' + url_path + ' HTTP/1.1\r\n'
-        'Host: ' + tv_ip + ':8002\r\n'
-        'Upgrade: websocket\r\n'
-        'Connection: Upgrade\r\n'
-        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
-        'Sec-WebSocket-Version: 13\r\n\r\n'
-    )
-    ss.sendall(handshake.encode())
-    resp = ss.recv(2048).decode('utf-8', errors='ignore')
-    ss.close()
-    if '101' in resp: sys.exit(0)
-except Exception: pass
-sys.exit(1)
-" && return 0
-    return 1
 }
 
 pair_samsung_websocket() {
@@ -304,8 +308,8 @@ payload = bytes.fromhex('FF' * 6 + mac_str * 16)
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 try:
-    sock.sendto(payload, ('255.255.255.255', 9))
-    sock.sendto(payload, ('255.255.255.255', 7))
+    sock.sendto(payload, ('$WOL_BROADCAST_IP', 9))
+    sock.sendto(payload, ('$WOL_BROADCAST_IP', 7))
 except Exception: pass
 try:
     subnets = subprocess.check_output(['ip', '-o', '-4', 'addr', 'show']).decode()
@@ -317,9 +321,11 @@ except Exception: pass
 "
 }
 
-send_samsung_ws_key() {
+send_samsung_macro() {
     local ip="$1"
-    local key_cmd="$2"
+    local target_key="$2"
+    local delay_short="$3"
+    local delay_long="$4"
     local token=""
     [ -s "$TOKEN_FILE" ] && token=$(cat "$TOKEN_FILE" | tr -d '[:space:]')
     [ -z "$token" ] || [ -z "$ip" ] && return 1
@@ -328,12 +334,16 @@ send_samsung_ws_key() {
 import socket, ssl, json, base64, struct, time, sys
 tv_ip = '$ip'
 token = '$token'
-key = '$key_cmd'
+target_key = '$target_key'
+d_short = float('$delay_short')
+d_long = float('$delay_long')
+
 app_name = base64.b64encode(b'Bazzite Console').decode('utf-8')
 url_path = '/api/v2/channels/samsung.remote.control?name=' + app_name + '&token=' + token
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
+
 def build_frame(p):
     l = len(p)
     mask = b'\x12\x34\x56\x78'
@@ -341,6 +351,7 @@ def build_frame(p):
     if l >= 126: h.extend(struct.pack('>H', l))
     h.extend(mask)
     return bytes(h + bytearray([b ^ mask[i % 4] for i, b in enumerate(p)]))
+
 try:
     s = socket.create_connection((tv_ip, 8002), timeout=2.5)
     ss = ctx.wrap_socket(s)
@@ -353,10 +364,19 @@ try:
         'Sec-WebSocket-Version: 13\r\n\r\n'
     )
     ss.sendall(handshake.encode())
-    if '101' not in ss.recv(2048).decode('utf-8', errors='ignore'): sys.exit(2)
-    payload = json.dumps({'method': 'ms.remote.control', 'params': {'Cmd': 'Click', 'DataOfCmd': key, 'Option': 'false', 'TypeOfRemote': 'SendRemoteKey'}}).encode('utf-8')
-    ss.sendall(build_frame(payload))
-    time.sleep(0.12)
+    resp = ss.recv(2048).decode('utf-8', errors='ignore')
+    if '101' not in resp: sys.exit(2)
+
+    keys = ['KEY_EXIT', 'KEY_HOME', target_key, 'KEY_ENTER', target_key]
+    for i, k in enumerate(keys):
+        payload = json.dumps({'method': 'ms.remote.control', 'params': {'Cmd': 'Click', 'DataOfCmd': k, 'Option': 'false', 'TypeOfRemote': 'SendRemoteKey'}}).encode('utf-8')
+        ss.sendall(build_frame(payload))
+        if i == 1:
+            time.sleep(d_long)
+        elif i < len(keys) - 1:
+            time.sleep(d_short)
+            
+    time.sleep(0.2)
     ss.close()
     sys.exit(0)
 except Exception: sys.exit(1)
@@ -371,15 +391,20 @@ send_brand_power_cmd() {
     log_msg "[WOL] Executing wake sequence for $brand ($mac | IP: ${ip:-N/A})"
     
     local attempt=1
-    while [ $attempt -le 20 ]; do
+    while [ $attempt -le $MAX_POLL_ATTEMPTS ]; do
         local pstate=$(get_samsung_power_state "$ip")
         log_msg "[WOL] PowerState poll attempt $attempt: [$pstate]"
         if [ "$pstate" = "on" ]; then
             log_msg "[WOL] Panel confirmed ON."
+            if [ "$attempt" -gt 3 ]; then
+                log_msg "[WOL] OS Booting: Giving security daemon 4s to initialize..."
+                sleep 4
+            else
+                sleep 1
+            fi
             break
         fi
         dispatch_wol_magic_packet "$mac"
-        send_samsung_ws_key "$ip" "KEY_POWERON" || send_samsung_ws_key "$ip" "KEY_POWER" || true
         sleep 2
         ((attempt++))
     done
@@ -387,13 +412,34 @@ send_brand_power_cmd() {
     local port_num=$(get_hdmi_port_num)
     local target_key="KEY_EXT4${port_num}"
     
-    if validate_samsung_token "$ip"; then
-        log_msg "[WOL] Switching input to HDMI ${port_num} ($target_key)..."
-        send_samsung_ws_key "$ip" "KEY_HOME"
-        sleep 0.6
-        send_samsung_ws_key "$ip" "$target_key"
-        sleep 0.4
-        send_samsung_ws_key "$ip" "$target_key"
+    # --- HARDWARE PROFILING ---
+    local tv_model=$(curl -s --connect-timeout 1.5 -m 2.0 "http://${ip}:8001/api/v2/" 2>/dev/null | grep -oEi '"modelName":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    log_msg "[WOL] Detected Target Hardware: ${tv_model:-UNKNOWN}"
+
+    local delay_short=0.1
+    local delay_long=1.2
+
+    if echo "$tv_model" | grep -qE "QN|S9|LS|Q[0-9]"; then
+        log_msg "[WOL] Hardware Profile: PREMIUM (QLED/OLED). Engaging high-speed timers."
+        delay_long=0.8
+    elif echo "$tv_model" | grep -qE "TU|AU|CU|DU|RU"; then
+        log_msg "[WOL] Hardware Profile: STANDARD (Crystal UHD). Engaging safe animation timers."
+        delay_long=1.2
+    else
+        log_msg "[WOL] Hardware Profile: LEGACY/UNKNOWN. Engaging conservative timers."
+        delay_long=1.5
+    fi
+
+    if [ "$attempt" -gt 3 ]; then
+        log_msg "[WOL] Cold boot adjustments applied to macro."
+    else
+        log_msg "[WOL] Warm boot adjustments applied to macro."
+        delay_long=$(echo "$delay_long - 0.2" | bc 2>/dev/null || echo "$delay_long")
+    fi
+
+    log_msg "[WOL] Switching input to HDMI ${port_num} ($target_key) via single-session macro..."
+    if ! send_samsung_macro "$ip" "$target_key" "$delay_short" "$delay_long"; then
+        log_msg "[WOL] Macro failed: Token rejected or TV unreachable."
     fi
 }
 
@@ -426,6 +472,7 @@ manual_sync() {
 
 run_wol_sync() {
     touch "$LOCK_FILE" 2>/dev/null || true
+    chmod 666 "$LOCK_FILE" 2>/dev/null || true
     exec 200>"$LOCK_FILE"
     flock -n 200 || { log_msg "[RUN] Wake routine already locked in another process."; exit 0; }
 
@@ -445,6 +492,34 @@ run_wol_sync() {
         log_msg "[RUN] No cache found for $EDID_ID. Running automatic sync..."
         manual_sync
     fi
+}
+
+update_script() {
+    if [[ "$GITHUB_REPO_URL" == *"YOUR_GITHUB_USERNAME"* ]]; then
+        echo "[-] Update failed: GITHUB_REPO_URL not configured."
+        echo "    Run 'hdmi-wol --config' to set your repository URL first."
+        exit 1
+    fi
+    
+    log_msg "[UPDATE] Fetching latest script from $GITHUB_REPO_URL..."
+    local tmp_dl=$(mktemp)
+    if curl -sL "$GITHUB_REPO_URL" -o "$tmp_dl"; then
+        if grep -q "#!/bin/bash" "$tmp_dl"; then
+            sudo mv "$tmp_dl" "$GLOBAL_BIN"
+            sudo chmod +x "$GLOBAL_BIN"
+            # Attempt to overwrite the local execution file if it differs from the global bin
+            sudo cp "$GLOBAL_BIN" "$(readlink -f "$0" 2>/dev/null || echo "$0")" 2>/dev/null || true
+            log_msg "[UPDATE] Successfully updated to latest version."
+            echo "[✓] Update complete! Running daemon-reload..."
+            sudo systemctl daemon-reload
+        else
+            echo "[-] Invalid file downloaded. Update aborted."
+            rm -f "$tmp_dl"
+        fi
+    else
+        echo "[-] Network request failed. Update aborted."
+    fi
+    exit 0
 }
 
 copy_to_clipboard() {
@@ -551,13 +626,17 @@ show_help() {
     echo "=================================================="
     echo "Usage: $(basename "$0") [OPTION]"
     echo ""
-    echo "Options:"
+    echo "Core Features:"
     echo "  --status         Display TV status and model info."
     echo "  --sendwol, -w    Trigger wake sequence and switch to active HDMI input."
     echo "  --sync, -s       Discover connected TV and authenticate WebSocket."
     echo "  --pair           Force-pair local Samsung WebSocket on port 8002."
     echo "  --repair         Purge stale bindings and run clean automated re-setup."
     echo "  --logs           View execution log history."
+    echo ""
+    echo "Management:"
+    echo "  --config         Open the global configuration file in your editor."
+    echo "  --update         Pull and install the latest script version from GitHub."
     echo "  --install        Install systemd boot, suspend/resume, and hotplug hooks."
     echo "  --uninstall      Cleanly disable and remove all hooks and configuration."
     echo "  --help, -h       Display this help menu."
@@ -626,6 +705,8 @@ case "$1" in
     --sendwol|-w|--run) run_wol_sync ;;
     --install) install_service ;;
     --uninstall|--disable) uninstall_service ;;
+    --update) update_script ;;
+    --config) ${EDITOR:-nano} "$CONFIG_FILE" ;;
     --help|-h|"") show_help ;;
     *) show_help ;;
 esac
