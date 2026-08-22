@@ -320,20 +320,17 @@ except Exception: pass
 send_samsung_macro() {
     local ip="$1"
     local target_key="$2"
-    local delay_short="$3"
-    local delay_long="$4"
     local token=""
     [ -s "$TOKEN_FILE" ] && token=$(cat "$TOKEN_FILE" | tr -d '[:space:]')
     [ -z "$token" ] || [ -z "$ip" ] && return 1
 
+    # --- STREAMLINED DIRECT INPUT SWITCH ---
     python3 -c "
 import socket, ssl, json, base64, struct, time, sys
 
 tv_ip = '$ip'
 token = '$token'
 target_key = '$target_key'
-d_short = float('$delay_short')
-d_long = float('$delay_long')
 
 app_name = base64.b64encode(b'Bazzite Console').decode('utf-8')
 url_path = '/api/v2/channels/samsung.remote.control?name=' + app_name + '&token=' + token
@@ -369,16 +366,14 @@ for attempt in range(1, max_retries + 1):
             time.sleep(1.0)
             continue
 
-        keys = ['KEY_EXIT', 'KEY_HOME', target_key, 'KEY_ENTER', target_key]
-        for i, k in enumerate(keys):
+        # Directly send the input key and enter command without disturbing app UI state
+        keys = [target_key, 'KEY_ENTER']
+        for k in keys:
             payload = json.dumps({'method': 'ms.remote.control', 'params': {'Cmd': 'Click', 'DataOfCmd': k, 'Option': 'false', 'TypeOfRemote': 'SendRemoteKey'}}).encode('utf-8')
             ss.sendall(build_frame(payload))
-            if i == 1:
-                time.sleep(d_long)
-            elif i < len(keys) - 1:
-                time.sleep(d_short)
+            time.sleep(0.2)
                 
-        time.sleep(0.3)
+        time.sleep(0.2)
         ss.close()
         sys.exit(0)
     except Exception as e:
@@ -402,8 +397,8 @@ send_brand_power_cmd() {
         if [ "$pstate" = "on" ]; then
             log_msg "[WOL] Panel confirmed ON."
             if [ "$attempt" -gt 3 ]; then
-                log_msg "[WOL] OS Booting: Giving security daemon 4s to initialize..."
-                sleep 4
+                log_msg "[WOL] OS Booting: Giving security daemon 3s to initialize..."
+                sleep 3
             else
                 sleep 1
             fi
@@ -417,33 +412,9 @@ send_brand_power_cmd() {
     local port_num=$(get_hdmi_port_num)
     local target_key="KEY_EXT4${port_num}"
     
-    local tv_model=$(curl -s --connect-timeout 1.5 -m 2.0 "http://${ip}:8001/api/v2/" 2>/dev/null | grep -oEi '"modelName":"[^"]*"' | head -n1 | cut -d'"' -f4)
-    log_msg "[WOL] Detected Target Hardware: ${tv_model:-UNKNOWN}"
-
-    local delay_short=0.1
-    local delay_long=1.2
-
-    if echo "$tv_model" | grep -qE "QN|S9|LS|Q[0-9]"; then
-        log_msg "[WOL] Hardware Profile: PREMIUM (QLED/OLED). Engaging high-speed timers."
-        delay_long=0.8
-    elif echo "$tv_model" | grep -qE "TU|AU|CU|DU|RU"; then
-        log_msg "[WOL] Hardware Profile: STANDARD (Crystal UHD). Engaging safe animation timers."
-        delay_long=1.2
-    else
-        log_msg "[WOL] Hardware Profile: LEGACY/UNKNOWN. Engaging conservative timers."
-        delay_long=1.5
-    fi
-
-    if [ "$attempt" -gt 3 ]; then
-        log_msg "[WOL] Cold boot adjustments applied to macro."
-    else
-        log_msg "[WOL] Warm boot adjustments applied to macro."
-        delay_long=$(echo "$delay_long - 0.2" | bc 2>/dev/null || echo "$delay_long")
-    fi
-
-    log_msg "[WOL] Switching input to HDMI ${port_num} ($target_key) via single-session macro..."
-    if ! send_samsung_macro "$ip" "$target_key" "$delay_short" "$delay_long"; then
-        log_msg "[WOL] Macro failed: Token rejected or TV unreachable."
+    log_msg "[WOL] Sending direct input switch to HDMI ${port_num} ($target_key)..."
+    if ! send_samsung_macro "$ip" "$target_key"; then
+        log_msg "[WOL] Input switch failed: Token rejected or TV unreachable."
     fi
 }
 
@@ -698,7 +669,7 @@ case "$1" in
     --pair|--force-pair) manual_sync --force ;;
     --repair) sudo rm -rf "$CACHE_DIR"; install_service ;;
     --sendwol|-w|--run) run_wol_sync ;;
-    --install) install_style ;;
+    --install) install_service ;;
     --uninstall|--disable) uninstall_service ;;
     --update) update_script ;;
     --config) ${EDITOR:-nano} "$CONFIG_FILE" ;;
