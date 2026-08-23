@@ -324,7 +324,6 @@ send_samsung_macro() {
     [ -s "$TOKEN_FILE" ] && token=$(cat "$TOKEN_FILE" | tr -d '[:space:]')
     [ -z "$token" ] || [ -z "$ip" ] && return 1
 
-    # --- STREAMLINED DIRECT INPUT SWITCH ---
     python3 -c "
 import socket, ssl, json, base64, struct, time, sys
 
@@ -366,12 +365,11 @@ for attempt in range(1, max_retries + 1):
             time.sleep(1.0)
             continue
 
-        # Directly send the input key and enter command without disturbing app UI state
-        keys = [target_key, 'KEY_ENTER']
+        keys = [target_key, 'KEY_ENTER', 'KEY_EXIT']
         for k in keys:
             payload = json.dumps({'method': 'ms.remote.control', 'params': {'Cmd': 'Click', 'DataOfCmd': k, 'Option': 'false', 'TypeOfRemote': 'SendRemoteKey'}}).encode('utf-8')
             ss.sendall(build_frame(payload))
-            time.sleep(0.2)
+            time.sleep(0.3)
                 
         time.sleep(0.2)
         ss.close()
