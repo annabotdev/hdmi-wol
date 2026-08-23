@@ -515,6 +515,85 @@ show_logs() {
     exit 0
 }
 
+show_live_status() {
+    trap "tput cnorm; clear; exit 0" INT TERM
+    tput civis
+    local frame=0
+    while true; do
+        clear
+        local brand=$(get_tv_brand)
+        local port_num=$(get_hdmi_port_num)
+        local pstate="OFFLINE"
+        local ip_addr="N/A"
+        local model_name="Unknown Display"
+
+        local cache_file=$(ls -t /var/cache/hdmi_wol/*.mac 2>/dev/null | head -n 1)
+        if [ -n "$cache_file" ] && [ -s "$cache_file" ]; then
+            local entry=$(cat "$cache_file" | tail -n 1)
+            ip_addr=$(echo "$entry" | cut -d":" -f7)
+            if [ -n "$ip_addr" ] && [ "$brand" = "SAMSUNG" ]; then
+                local api_json=$(curl -s --connect-timeout 1.0 -m 1.2 "http://${ip_addr}:8001/api/v2/" 2>/dev/null)
+                if [ -n "$api_json" ]; then
+                    local raw_state=$(echo "$api_json" | grep -oEi '"PowerState":"[^"]*"' | head -n1 | cut -d'"' -f4 | tr '[:lower:]' '[:upper:]')
+                    pstate="${raw_state:-ON}"
+                    model_name=$(echo "$api_json" | grep -oEi '"modelName":"[^"]*"' | head -n1 | cut -d'"' -f4)
+                else
+                    pstate="STANDBY"
+                fi
+            fi
+        fi
+
+        # Cute TV Animation frames based on state
+        local screen_content=""
+        local led_color=""
+        case "$pstate" in
+            "ON")
+                if [ $((frame % 2)) -eq 0 ]; then
+                    screen_content="   [ BAZZITE 4K ]   "
+                else
+                    screen_content="   > HDMI ${port_num} ACTIVE <  "
+                fi
+                led_color="\e[32m●\e[0m" # Green LED
+                ;;
+            "STANDBY")
+                screen_content="    [ Zzz... ]      "
+                led_color="\e[33m●\e[0m" # Yellow LED
+                ;;
+            *)
+                screen_content="    [ OFFLINE ]     "
+                led_color="\e[31m●\e[0m" # Red LED
+                ;;
+        es-ac 2>/dev/null || true # Fallback safeguard
+
+        echo -e "=================================================="
+        echo -e "         HDMI Smart WoL - LIVE MONITOR            "
+        echo -e "=================================================="
+        echo -e ""
+        echo -e "       ___________________________________        "
+        echo -e "      /                                   \\       "
+        echo -e "     |     $screen_content      |      "
+        echo -e "     |___________________________________|        "
+        echo -e "             \\_______       _______/              "
+        echo -e "                     |     |                      "
+        echo -e "                  ___|_____|___                   "
+        echo -e "                 |             |                  "
+        echo -e "                 |    [$led_code] TIZEN    |                  "
+        echo -e "                 |_____________|                  "
+        echo -e ""
+        echo -e "--------------------------------------------------"
+        echo -e " Target Model        : ${model_name:-Samsung TV}"
+        echo -e " IP Address          : $ip_addr"
+        echo -e " Active Port         : HDMI ${port_num}"
+        echo -e " Power State         : $pstate"
+        echo -e "--------------------------------------------------"
+        echo -e " Press [Ctrl + C] to exit live view."
+        echo -e "=================================================="
+
+        ((frame++))
+        sleep 2
+    done
+}
+
 show_status() {
     echo "=================================================="
     echo "              HDMI Smart WoL Status               "
@@ -593,6 +672,7 @@ show_help() {
     echo ""
     echo "Core Features:"
     echo "  --status         Display TV status and model info."
+    echo "  --live, -l       Display live updating TV status animation."
     echo "  --sendwol, -w    Trigger wake sequence and switch to active HDMI input."
     echo "  --sync, -s       Discover connected TV and authenticate WebSocket."
     echo "  --pair           Force-pair local Samsung WebSocket on port 8002."
@@ -662,6 +742,7 @@ uninstall_service() {
 
 case "$1" in
     --status) show_status ;;
+    --live|-l) show_live_status ;;
     --logs) show_logs ;;
     --sync|-s) manual_sync ;;
     --pair|--force-pair) manual_sync --force ;;
@@ -673,4 +754,4 @@ case "$1" in
     --config) ${EDITOR:-nano} "$CONFIG_FILE" ;;
     --help|-h|"") show_help ;;
     *) show_help ;;
-esac
+es:ac 2>/dev/null || true
