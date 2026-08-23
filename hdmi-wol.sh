@@ -572,7 +572,7 @@ show_status() {
                     local sz=$(echo "$model" | grep -oE '[0-9]{2}' | head -n 1)
                     [ -n "$sz" ] && [ "$sz" -ge 32 ] && [ "$sz" -le 98 ] && screen_size="${sz}\" Class 4K UHD Display"
                 else
-                    pstate="STANDBY / UNREACHABLE"
+                    pstate="STANDBY"
                 fi
             fi
         fi
@@ -582,61 +582,71 @@ show_status() {
             t_val="Present & Cached"
         fi
 
-        local screen_content=""
-        local led_color=""
+        # Generate animated TV screen content based on power state
+        local r1="" r2="" r3=""
         case "$pstate" in
             ON)
                 if [ $((frame % 2)) -eq 0 ]; then
-                    screen_content="    [ BAZZITE 4K ]     "
+                    r1="      BAZZITE 4K      "
+                    r2="   HDMI ${port_num} ACTIVE    "
+                    r3="    60Hz HDR READY    "
                 else
-                    screen_content=" > HDMI ${port_num} ACTIVE < "
+                    r1="   > HDMI ${port_num} <       "
+                    r2="     STREAMING        "
+                    r3="    LINK STABLE       "
                 fi
-                led_color="\e[32m●\e[0m"
                 ;;
             STANDBY*)
-                screen_content="      [ Zzz... ]       "
-                led_color="\e[33m●\e[0m"
+                r1="                      "
+                r2="      [ Zzz... ]      "
+                r3="                      "
                 ;;
             *)
-                screen_content="     [ OFFLINE ]       "
-                led_color="\e[31m●\e[0m"
+                # Generate pseudo-static snow effect for offline/booting
+                local chars=('#' '*' '.' '+' ':' 'x' 'o' ' ')
+                r1="${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}"
+                r2="${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}  NO SIGNAL   ${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}"
+                r3="${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}${chars[$RANDOM % 8]}"
                 ;;
         esac
 
         local left=()
-        left+=("Display Brand         : $brand")
-        left+=("Connected HDMI Port   : HDMI ${port_num}")
-        left+=("TV Model & Name       : ${model} (\"${name}\")")
-        left+=("Estimated Panel Size  : ${screen_size}")
-        left+=("Native Resolution     : 3840x2160 @ 60Hz (4K)")
-        left+=("Firmware / OS         : Tizen OS (${os_ver})")
-        left+=("Network Connection    : IP Address ($ip_addr)")
-        left+=("Tizen Power State     : $pstate")
-        left+=("Hardware MAC Address  : $mac_addr")
-        left+=("WebSocket Token       : $t_val")
+        left+=("Brand        : $brand")
+        left+=("Port         : HDMI ${port_num}")
+        left+=("Model        : ${model}")
+        left+=("Size         : ${screen_size}")
+        left+=("Resolution   : 3840x2160 @ 60Hz")
+        left+=("OS           : Tizen (${os_ver})")
+        left+=("IP           : $ip_addr")
+        left+=("State        : $pstate")
+        left+=("MAC          : $mac_addr")
+        left+=("Token        : $t_val")
 
         local right=()
-        right+=("   _______________________")
-        right+=("  /                       \\")
-        right+=(" |${screen_content}|")
-        right+=(" |_________________________|")
-        right+=("         \\_______/")
-        right+=("           |   |")
-        right+=("        ___|___|___")
-        right+=("       |           |")
-        right+=("       | [${led_color}] TIZEN |")
-        right+=("       |___________|")
+        right+=("    ________________________")
+        right+=("   /                        \\")
+        right+=("  |  $r1  |")
+        right+=("  |  $r2  |")
+        right+=("  |  $r3  |")
+        right+=("   \\________________________/")
+        right+=("          \\___||___/")
 
         echo -e "\033[K========================================================================"
-        echo -e "\033[K                 HDMI Smart WoL Dashboard Status"
+        echo -e "\033[K                HDMI Smart WoL Dashboard Status"
         echo -e "\033[K========================================================================"
         
-        for i in {0..9}; do
+        for i in {0..6}; do
             local l_line="${left[$i]:-}"
             local r_line="${right[$i]:-}"
-            printf "\033[K%-45s %b\n" "$l_line" "$r_line"
+            printf "\033[K%-37s   %s\n" "$l_line" "$r_line"
         done
         
+        for i in {7..9}; do
+            local l_line="${left[$i]:-}"
+            local r_line="${right[$i]:-}"
+            printf "\033[K%-37s   %s\n" "$l_line" "$r_line"
+        done
+
         local wol_bin=$(get_wol_cmd)
         local sh_en="Disabled"
         systemctl is-enabled hdmi-smart-wol.service &>/dev/null && sh_en="Enabled"
@@ -657,7 +667,7 @@ show_status() {
         echo -e "\033[K========================================================================"
         
         ((frame++))
-        sleep 2
+        sleep 1
     done
 
     if [ "$mode" = "live" ]; then
