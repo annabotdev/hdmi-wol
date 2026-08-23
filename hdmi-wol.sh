@@ -528,151 +528,141 @@ show_logs() {
     exit 0
 }
 
-show_live_status() {
-    trap "tput cnorm; clear; exit 0" INT TERM
-    tput civis
+show_status() {
+    local mode="$1"
     local frame=0
-    while true; do
+
+    if [ "$mode" = "live" ]; then
+        trap "tput cnorm; echo ''; exit 0" INT TERM
+        tput civis
         clear
+    fi
+
+    while true; do
+        if [ "$mode" = "live" ]; then
+            printf "\033[H"
+        fi
+
         local brand=$(get_tv_brand)
         local port_num=$(get_hdmi_port_num)
+        
+        local mac_addr="Unknown MAC"
+        local ip_addr="Unknown IP"
+        local model="Unknown Display"
+        local name="Smart TV"
+        local os_ver="Unknown"
         local pstate="OFFLINE"
-        local ip_addr="N/A"
-        local model_name="Unknown Display"
-
+        local screen_size="Unknown Size"
         local cache_file=$(ls -t /var/cache/hdmi_wol/*.mac 2>/dev/null | head -n 1)
+
         if [ -n "$cache_file" ] && [ -s "$cache_file" ]; then
             local entry=$(cat "$cache_file" | tail -n 1)
+            mac_addr=$(echo "$entry" | cut -d":" -f1-6)
             ip_addr=$(echo "$entry" | cut -d":" -f7)
+
             if [ -n "$ip_addr" ] && [ "$brand" = "SAMSUNG" ]; then
                 local api_json=$(curl -s --connect-timeout 1.0 -m 1.2 "http://${ip_addr}:8001/api/v2/" 2>/dev/null)
                 if [ -n "$api_json" ]; then
+                    name=$(echo "$api_json" | grep -oEi '"name":"[^"]*"' | head -n1 | cut -d'"' -f4)
+                    model=$(echo "$api_json" | grep -oEi '"modelName":"[^"]*"' | head -n1 | cut -d'"' -f4)
+                    os_ver=$(echo "$api_json" | grep -oEi '"OS":"[^"]*"' | head -n1 | cut -d'"' -f4)
                     local raw_state=$(echo "$api_json" | grep -oEi '"PowerState":"[^"]*"' | head -n1 | cut -d'"' -f4 | tr '[:lower:]' '[:upper:]')
                     pstate="${raw_state:-ON}"
-                    model_name=$(echo "$api_json" | grep -oEi '"modelName":"[^"]*"' | head -n1 | cut -d'"' -f4)
+                    
+                    local sz=$(echo "$model" | grep -oE '[0-9]{2}' | head -n 1)
+                    [ -n "$sz" ] && [ "$sz" -ge 32 ] && [ "$sz" -le 98 ] && screen_size="${sz}\" Class 4K UHD Display"
                 else
-                    pstate="STANDBY"
+                    pstate="STANDBY / UNREACHABLE"
                 fi
             fi
+        fi
+
+        local t_val="Missing (Run hdmi-wol --pair)"
+        if [ -s "$TOKEN_FILE" ]; then
+            t_val="Present & Cached"
         fi
 
         local screen_content=""
         local led_color=""
         case "$pstate" in
-            "ON")
+            ON)
                 if [ $((frame % 2)) -eq 0 ]; then
-                    screen_content="   [ BAZZITE 4K ]   "
+                    screen_content="    [ BAZZITE 4K ]     "
                 else
-                    screen_content="   > HDMI ${port_num} ACTIVE <  "
+                    screen_content=" > HDMI ${port_num} ACTIVE < "
                 fi
                 led_color="\e[32m●\e[0m"
                 ;;
-            "STANDBY")
-                screen_content="    [ Zzz... ]      "
+            STANDBY*)
+                screen_content="      [ Zzz... ]       "
                 led_color="\e[33m●\e[0m"
                 ;;
             *)
-                screen_content="    [ OFFLINE ]     "
+                screen_content="     [ OFFLINE ]       "
                 led_color="\e[31m●\e[0m"
                 ;;
         esac
 
-        echo -e "=================================================="
-        echo -e "         HDMI Smart WoL - LIVE MONITOR            "
-        echo -e "=================================================="
-        echo -e ""
-        echo -e "       ___________________________________        "
-        echo -e "      /                                   \\       "
-        echo -e "     |     $screen_content      |      "
-        echo -e "     |___________________________________|        "
-        echo -e "             \\_______       _______/              "
-        echo -e "                     |     |                      "
-        echo -e "                  ___|_____|___                   "
-        echo -e "                 |             |                  "
-        echo -e "                 |    [$led_color] TIZEN    |                  "
-        echo -e "                 |_____________|                  "
-        echo -e ""
-        echo -e "--------------------------------------------------"
-        echo -e " Target Model        : ${model_name:-Samsung TV}"
-        echo -e " IP Address          : $ip_addr"
-        echo -e " Active Port         : HDMI ${port_num}"
-        echo -e " Power State         : $pstate"
-        echo -e "--------------------------------------------------"
-        echo -e " Press [Ctrl + C] to exit live view."
-        echo -e "=================================================="
+        local left=()
+        left+=("Display Brand         : $brand")
+        left+=("Connected HDMI Port   : HDMI ${port_num}")
+        left+=("TV Model & Name       : ${model} (\"${name}\")")
+        left+=("Estimated Panel Size  : ${screen_size}")
+        left+=("Native Resolution     : 3840x2160 @ 60Hz (4K)")
+        left+=("Firmware / OS         : Tizen OS (${os_ver})")
+        left+=("Network Connection    : IP Address ($ip_addr)")
+        left+=("Tizen Power State     : $pstate")
+        left+=("Hardware MAC Address  : $mac_addr")
+        left+=("WebSocket Token       : $t_val")
 
+        local right=()
+        right+=("   _______________________")
+        right+=("  /                       \\")
+        right+=(" |${screen_content}|")
+        right+=(" |_________________________|")
+        right+=("         \\_______/")
+        right+=("           |   |")
+        right+=("        ___|___|___")
+        right+=("       |           |")
+        right+=("       | [${led_color}] TIZEN |")
+        right+=("       |___________|")
+
+        echo -e "\033[K========================================================================"
+        echo -e "\033[K                 HDMI Smart WoL Dashboard Status"
+        echo -e "\033[K========================================================================"
+        
+        for i in {0..9}; do
+            local l_line="${left[$i]:-}"
+            local r_line="${right[$i]:-}"
+            printf "\033[K%-45s %b\n" "$l_line" "$r_line"
+        done
+        
+        local wol_bin=$(get_wol_cmd)
+        local sh_en="Disabled"
+        systemctl is-enabled hdmi-smart-wol.service &>/dev/null && sh_en="Enabled"
+        local ht_en="Disabled"
+        [ -f "$UDEV_RULE" ] && ht_en="Enabled"
+
+        echo -e "\033[K------------------------------------------------------------------------"
+        echo -e "\033[KWoL Engine Active     : ${wol_bin:-Native Python Sender}"
+        echo -e "\033[KSystemd Startup Hook  : $sh_en"
+        echo -e "\033[KHotplug DRM Trigger   : $ht_en"
+        echo -e "\033[K========================================================================"
+        
+        if [ "$mode" != "live" ]; then
+            break
+        fi
+
+        echo -e "\033[K Press [Ctrl + C] to exit live view monitor."
+        echo -e "\033[K========================================================================"
+        
         ((frame++))
         sleep 2
     done
-}
 
-show_status() {
-    echo "=================================================="
-    echo "              HDMI Smart WoL Status               "
-    echo "=================================================="
-    
-    local brand=$(get_tv_brand)
-    local port_num=$(get_hdmi_port_num)
-
-    echo "Display Brand         : $brand"
-    echo "Connected HDMI Port   : HDMI ${port_num}"
-
-    local cache_file=$(ls -t /var/cache/hdmi_wol/*.mac 2>/dev/null | head -n 1)
-    if [ -n "$cache_file" ] && [ -s "$cache_file" ]; then
-        local entry=$(cat "$cache_file" | tail -n 1)
-        local mac_addr=$(echo "$entry" | cut -d":" -f1-6)
-        local ip_addr=$(echo "$entry" | cut -d":" -f7)
-
-        if [ -n "$ip_addr" ] && [ "$brand" = "SAMSUNG" ]; then
-            local api_json=$(curl -s --connect-timeout 1.5 -m 2.0 "http://${ip_addr}:8001/api/v2/" 2>/dev/null)
-            if [ -n "$api_json" ]; then
-                local name=$(echo "$api_json" | grep -oEi '"name":"[^"]*"' | head -n1 | cut -d'"' -f4)
-                local model=$(echo "$api_json" | grep -oEi '"modelName":"[^"]*"' | head -n1 | cut -d'"' -f4)
-                local os_ver=$(echo "$api_json" | grep -oEi '"OS":"[^"]*"' | head -n1 | cut -d'"' -f4)
-                local pstate=$(echo "$api_json" | grep -oEi '"PowerState":"[^"]*"' | head -n1 | cut -d'"' -f4 | tr '[:lower:]' '[:upper:]')
-                
-                local sz=$(echo "$model" | grep -oE '[0-9]{2}' | head -n 1)
-                local screen_size=""
-                [ -n "$sz" ] && [ "$sz" -ge 32 ] && [ "$sz" -le 98 ] && screen_size="${sz}\" Class 4K UHD Display"
-
-                echo "TV Model & Name       : ${model:-Samsung TV} (\"${name:-Smart TV}\")"
-                [ -n "$screen_size" ] && echo "Estimated Panel Size  : $screen_size"
-                echo "Native Resolution     : 3840x2160 @ 60Hz (4K UHD)"
-                [ -n "$os_ver" ] && echo "Firmware / OS         : Tizen OS ($os_ver)"
-                echo "Network Connection    : IP Address ($ip_addr)"
-                echo "Tizen Power State     : ${pstate:-ON}"
-            else
-                echo "Tizen Power State     : STANDBY / UNREACHABLE ($ip_addr)"
-            fi
-        fi
-        echo "Hardware MAC Address  : $mac_addr"
-        
-        if [ -s "$TOKEN_FILE" ]; then
-            local t_val=$(cat "$TOKEN_FILE" | tr -d '[:space:]')
-            echo "WebSocket Token       : Present & Cached ($t_val)"
-        else
-            echo "WebSocket Token       : Missing (Run hdmi-wol --pair)"
-        fi
-    else
-        echo "Current TV Sync       : Unsynced (Run hdmi-wol --sync)"
+    if [ "$mode" = "live" ]; then
+        tput cnorm
     fi
-
-    echo "--------------------------------------------------"
-    local wol_bin=$(get_wol_cmd)
-    echo "WoL Engine Active     : ${wol_bin:-Native Python Sender}"
-    
-    if systemctl is-enabled hdmi-smart-wol.service &>/dev/null; then
-        echo "Systemd Startup Hook  : Enabled"
-    else
-        echo "Systemd Startup Hook  : Disabled"
-    fi
-
-    if [ -f "$UDEV_RULE" ]; then
-        echo "Hotplug DRM Trigger   : Enabled"
-    else
-        echo "Hotplug DRM Trigger   : Disabled"
-    fi
-    echo "=================================================="
     exit 0
 }
 
@@ -684,7 +674,7 @@ show_help() {
     echo ""
     echo "Core Features:"
     echo "  --status         Display TV status and model info."
-    echo "  --live, -l       Display live updating TV status animation."
+    echo "  --status -l      Launch dashboard in live-updating monitor mode."
     echo "  --sendwol, -w    Trigger wake sequence and switch to active HDMI input."
     echo "  --sync, -s       Discover connected TV and authenticate WebSocket."
     echo "  --pair           Force-pair local Samsung WebSocket on port 8002."
@@ -753,8 +743,14 @@ uninstall_service() {
 }
 
 case "$1" in
-    --status) show_status ;;
-    --live|-l) show_live_status ;;
+    --status) 
+        if [[ "$2" == "-l" || "$2" == "--live" ]]; then
+            show_status "live"
+        else
+            show_status "static"
+        fi
+        ;;
+    --live|-l) show_status "live" ;;
     --logs) show_logs ;;
     --sync|-s) manual_sync ;;
     --pair|--force-pair) manual_sync --force ;;
