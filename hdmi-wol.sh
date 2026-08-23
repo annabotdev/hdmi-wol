@@ -469,15 +469,20 @@ run_wol_sync() {
 }
 
 update_script() {
-    log_msg "[UPDATE] Fetching latest script from $GITHUB_REPO_URL..."
+    log_msg "[UPDATE] Checking for updates from $GITHUB_REPO_URL..."
     local tmp_dl=$(mktemp)
     if curl -sL "$GITHUB_REPO_URL" -o "$tmp_dl"; then
         if grep -q "#!/bin/bash" "$tmp_dl"; then
+            if [ -f "$GLOBAL_BIN" ] && cmp -s "$GLOBAL_BIN" "$tmp_dl"; then
+                echo "[✓] You are already on the latest version! No update needed."
+                rm -f "$tmp_dl"
+                exit 0
+            fi
             mkdir -p "$(dirname "$GLOBAL_BIN")"
             mv "$tmp_dl" "$GLOBAL_BIN"
             chmod +x "$GLOBAL_BIN"
             log_msg "[UPDATE] Successfully updated to latest version."
-            echo "[✓] Update complete!"
+            echo "[✓] Update complete! New version applied."
         else
             echo "[-] Invalid file downloaded. Update aborted."
             rm -f "$tmp_dl"
