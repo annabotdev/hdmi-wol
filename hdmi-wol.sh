@@ -476,8 +476,8 @@ update_script() {
     if curl -sL "$cache_url" -o "$tmp_dl"; then
         if grep -q "#!/bin/bash" "$tmp_dl"; then
             if [ -f "$GLOBAL_BIN" ]; then
-                local current_hash=$(sha256sum "$GLOBAL_BIN" | awk '{print $1}')
-                local remote_hash=$(sha256sum "$tmp_dl" | awk '{print $1}')
+                local current_hash=$(tr -d '\r' < "$GLOBAL_BIN" | sha256sum | awk '{print $1}')
+                local remote_hash=$(tr -d '\r' < "$tmp_dl" | sha256sum | awk '{print $1}')
                 if [ "$current_hash" = "$remote_hash" ]; then
                     echo "[✓] You are already on the latest version! No update needed."
                     rm -f "$tmp_dl"
