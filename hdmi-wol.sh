@@ -2,6 +2,7 @@
 # HDMI Smart Wake-on-LAN & Source Switcher
 # A state-aware hardware abstraction layer for Tizen/WebOS displays
 
+# Auto-elevate privileges for actions requiring system changes
 if [ "$EUID" -ne 0 ]; then
     case "$1" in
         --install|--uninstall|--disable|--sync|-s|--pair|--force-pair|--repair|--update|--config)
@@ -19,7 +20,7 @@ CONFIG_FILE="/etc/hdmi_smart_wol.conf"
 SERVICE_FILE="/etc/systemd/system/hdmi-smart-wol.service"
 HOTPLUG_SERVICE="/etc/systemd/system/hdmi-hotplug-wol.service"
 UDEV_RULE="/etc/udev/rules.d/99-hdmi-hotplug-wol.rules"
-GLOBAL_BIN="$HOME/.local/bin/hdmi-wol"
+GLOBAL_BIN="/usr/local/bin/hdmi-wol"
 
 # Generate default config if missing
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -478,9 +479,9 @@ update_script() {
                 rm -f "$tmp_dl"
                 exit 0
             fi
-            mkdir -p "$(dirname "$GLOBAL_BIN")"
-            mv "$tmp_dl" "$GLOBAL_BIN"
-            chmod +x "$GLOBAL_BIN"
+            sudo mkdir -p "$(dirname "$GLOBAL_BIN")"
+            sudo mv "$tmp_dl" "$GLOBAL_BIN"
+            sudo chmod +x "$GLOBAL_BIN"
             log_msg "[UPDATE] Successfully updated to latest version."
             echo "[✓] Update complete! New version applied."
         else
@@ -706,7 +707,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/admin/.local/bin/hdmi-wol --sendwol
+ExecStart=/usr/local/bin/hdmi-wol --sendwol
 
 [Install]
 WantedBy=multi-user.target sleep.target
@@ -719,7 +720,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/admin/.local/bin/hdmi-wol --sendwol
+ExecStart=/usr/local/bin/hdmi-wol --sendwol
 SUBEOF
 
     cat << 'SUBEOF' | sudo tee "$UDEV_RULE" > /dev/null
