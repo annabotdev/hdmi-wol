@@ -484,10 +484,11 @@ update_script() {
                 fi
             fi
             sudo mkdir -p "$(dirname "$GLOBAL_BIN")"
-            sudo mv "$tmp_dl" "$GLOBAL_BIN"
+            sudo cp "$tmp_dl" "$GLOBAL_BIN"
             sudo chmod +x "$GLOBAL_BIN"
             log_msg "[UPDATE] Successfully updated to latest version."
             echo "[✓] Update complete! New version applied."
+            rm -f "$tmp_dl"
         else
             echo "[-] Invalid file downloaded. Update aborted."
             rm -f "$tmp_dl"
@@ -764,4 +765,4 @@ case "$1" in
     --config) ${EDITOR:-nano} "$CONFIG_FILE" ;;
     --help|-h|"") show_help ;;
     *) show_help ;;
-es:ac 2>/dev/null || true
+esac
