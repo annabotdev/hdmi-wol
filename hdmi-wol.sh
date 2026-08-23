@@ -472,7 +472,8 @@ run_wol_sync() {
 update_script() {
     log_msg "[UPDATE] Checking for updates from $GITHUB_REPO_URL..."
     local tmp_dl=$(mktemp)
-    if curl -sL "$GITHUB_REPO_URL" -o "$tmp_dl"; then
+    local cache_url="${GITHUB_REPO_URL}?cb=$(date +%s)"
+    if curl -sL "$cache_url" -o "$tmp_dl"; then
         if grep -q "#!/bin/bash" "$tmp_dl"; then
             if [ -f "$GLOBAL_BIN" ]; then
                 local current_hash=$(sha256sum "$GLOBAL_BIN" | awk '{print $1}')
