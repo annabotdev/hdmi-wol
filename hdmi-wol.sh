@@ -389,7 +389,8 @@ send_brand_power_cmd() {
     log_msg "[WOL] Executing wake sequence for $brand ($mac | IP: ${ip:-N/A})"
     
     local attempt=1
-    while [ $attempt -le $MAX_POLL_ATTEMPTS ]; do
+    local max_attempts=$MAX_POLL_ATTEMPTS
+    while [ $attempt -le $max_attempts ]; do
         local pstate=$(get_samsung_power_state "$ip")
         log_msg "[WOL] PowerState poll attempt $attempt: [$pstate]"
         if [ "$pstate" = "on" ]; then
@@ -543,7 +544,6 @@ show_live_status() {
             fi
         fi
 
-        # Cute TV Animation frames based on state
         local screen_content=""
         local led_color=""
         case "$pstate" in
@@ -553,17 +553,17 @@ show_live_status() {
                 else
                     screen_content="   > HDMI ${port_num} ACTIVE <  "
                 fi
-                led_color="\e[32m●\e[0m" # Green LED
+                led_color="\e[32m●\e[0m"
                 ;;
             "STANDBY")
                 screen_content="    [ Zzz... ]      "
-                led_color="\e[33m●\e[0m" # Yellow LED
+                led_color="\e[33m●\e[0m"
                 ;;
             *)
                 screen_content="    [ OFFLINE ]     "
-                led_color="\e[31m●\e[0m" # Red LED
+                led_color="\e[31m●\e[0m"
                 ;;
-        es-ac 2>/dev/null || true # Fallback safeguard
+        esac
 
         echo -e "=================================================="
         echo -e "         HDMI Smart WoL - LIVE MONITOR            "
@@ -577,7 +577,7 @@ show_live_status() {
         echo -e "                     |     |                      "
         echo -e "                  ___|_____|___                   "
         echo -e "                 |             |                  "
-        echo -e "                 |    [$led_code] TIZEN    |                  "
+        echo -e "                 |    [$led_color] TIZEN    |                  "
         echo -e "                 |_____________|                  "
         echo -e ""
         echo -e "--------------------------------------------------"
@@ -754,4 +754,4 @@ case "$1" in
     --config) ${EDITOR:-nano} "$CONFIG_FILE" ;;
     --help|-h|"") show_help ;;
     *) show_help ;;
-es:ac 2>/dev/null || true
+esac
