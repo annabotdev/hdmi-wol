@@ -474,10 +474,14 @@ update_script() {
     local tmp_dl=$(mktemp)
     if curl -sL "$GITHUB_REPO_URL" -o "$tmp_dl"; then
         if grep -q "#!/bin/bash" "$tmp_dl"; then
-            if [ -f "$GLOBAL_BIN" ] && cmp -s "$GLOBAL_BIN" "$tmp_dl"; then
-                echo "[✓] You are already on the latest version! No update needed."
-                rm -f "$tmp_dl"
-                exit 0
+            if [ -f "$GLOBAL_BIN" ]; then
+                local current_hash=$(sha256sum "$GLOBAL_BIN" | awk '{print $1}')
+                local remote_hash=$(sha256sum "$tmp_dl" | awk '{print $1}')
+                if [ "$current_hash" = "$remote_hash" ]; then
+                    echo "[✓] You are already on the latest version! No update needed."
+                    rm -f "$tmp_dl"
+                    exit 0
+                fi
             fi
             sudo mkdir -p "$(dirname "$GLOBAL_BIN")"
             sudo mv "$tmp_dl" "$GLOBAL_BIN"
@@ -760,4 +764,4 @@ case "$1" in
     --config) ${EDITOR:-nano} "$CONFIG_FILE" ;;
     --help|-h|"") show_help ;;
     *) show_help ;;
-esac
+es:ac 2>/dev/null || true
